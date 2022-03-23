@@ -1,4 +1,4 @@
-version: "2.0"
+version: "3.0"
 
 rules:
 
@@ -11,3 +11,17 @@ rules:
   steps:
   - intent: bot_challenge
   - action: utter_iamabot
+
+- rule: email form
+  steps:
+    - intent: greet
+    - action: email_form
+    - active_loop: email_form
+
+- rule: email form deactivate
+  steps:
+    - action: email_form
+    - active_loop: null
+    - slot_was_set:
+        - requested_slot: null
+    - action: utter_greet

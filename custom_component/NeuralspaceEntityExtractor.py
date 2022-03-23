@@ -4,21 +4,17 @@ from typing import Dict, Any, Optional, List
 
 import requests
 import rasa
-from rasa.nlu.extractors.extractor import EntityExtractor
-from rasa.nlu.config import RasaNLUModelConfig
-from rasa.nlu.model import Metadata
+from rasa.engine.graph import GraphComponent, ExecutionContext
+from rasa.engine.recipes.default_recipe import DefaultV1Recipe
+from rasa.engine.storage.resource import Resource
+from rasa.engine.storage.storage import ModelStorage
+from rasa.nlu.extractors.extractor import EntityExtractorMixin
 from rasa.shared.constants import DOCS_URL_COMPONENTS
 from rasa.shared.importers import rasa
 from rasa.shared.nlu.constants import TEXT, ENTITIES
 from rasa.shared.nlu.training_data.message import Message
 from typing_extensions import Text
 
-"""
-step 1: detect language of latest message
-step 2: translate latest message to english if not in english
-step 3: provide response for the same in detected language
-step 4: wait for user reply and start with step 1
-"""
 
 logger = logging.getLogger(__name__)
 
@@ -56,30 +52,44 @@ def convert_neuralspace_format_to_rasa(
     return extracted
 
 
-class NeuralSpaceEntityExtractor(EntityExtractor):
-    defaults = {
-        "language": "en",
-        "access_token": None,
-        "dimension": None,
-        "timeout": 3
-    }
+@DefaultV1Recipe.register(
+    DefaultV1Recipe.ComponentType.ENTITY_EXTRACTOR, is_trainable=False
+)
+class NeuralSpaceEntityExtractor(GraphComponent, EntityExtractorMixin):
+    """Searches for structured entities, e.g. dates, using a neuralspace server."""
+
+    @staticmethod
+    def get_default_config() -> Dict[Text, Any]:
+        return {
+            # default language `en` so entity extractor works
+            "language": "en",
+            # access token need to be provided for entity extractor to work
+            "access_token": None,
+            # by default all dimensions recognized by neuralspace are returned
+            # dimensions can be configured to contain an array of strings
+            # with the names of the dimensions to filter for
+            "dimension": None,
+            # Timeout for receiving response from HTTP URL of the running
+            # neuralspace server. If not set the default timeout of duckling HTTP URL
+            # is set to 3 seconds.
+            "timeout": 3
+        }
 
     def __init__(
             self,
-            component_config: Optional[Dict[Text, Any]] = None,
-            language: Optional[Text] = None
+            config: Dict[Text, Any]
     ) -> None:
-        super().__init__(component_config)
-        self.language = language
-        self.headers = {
-            "authorization": component_config["access_token"],
-        }
+        self.component_config = config
 
     @classmethod
     def create(
-            cls, component_config: Dict[Text, Any], config: RasaNLUModelConfig
+            cls,
+            config: Dict[Text, Any],
+            model_storage: ModelStorage,
+            resource: Resource,
+            execution_context: ExecutionContext,
     ) -> "NeuralSpaceEntityExtractor":
-        return cls(component_config, config.language)
+        return cls(config)
 
     def _access_token(self) -> Optional[Text]:
         if os.environ.get("NEURALSPACE_ACCESS_TOKEN"):
@@ -94,13 +104,20 @@ class NeuralSpaceEntityExtractor(EntityExtractor):
         }
 
     def _neuralspace_parse(self, text: Text) -> List[Dict[Text, Any]]:
+        """
+        Sends text message to Neuralspace endpoint with access token.
+        Neuralspace provides json response with entities extracted.
+        """
         translate_url = "https://platform.neuralspace.ai/api/ner/v1/entity"
+        headers = {
+            "authorization": self.component_config["access_token"],
+        }
         try:
             payload = self._payload(text)
             response = requests.post(
                 url=translate_url,
                 data=payload,
-                headers=self.headers,
+                headers=headers,
                 timeout=self.component_config.get("timeout")
             )
             if response.status_code == 200:
@@ -125,7 +142,7 @@ class NeuralSpaceEntityExtractor(EntityExtractor):
                 "Error: {}".format(e)
             )
 
-    def process(self, message: Message, **kwargs: Any) -> Message:
+    def process(self, messages: List[Message]) -> List[Message]:
         if self._access_token() is None:
             rasa.shared.utils.io.raise_warning(
                 "NeuralSpace Entity Extractor component in pipeline, but no "
@@ -134,25 +151,13 @@ class NeuralSpaceEntityExtractor(EntityExtractor):
                 "set as an environment variable. No entities will be extracted!",
                 docs=DOCS_URL_COMPONENTS + "#NeuralSpaceEntityExtractor",
             )
-            return message
-        matches = self._neuralspace_parse(message.get(TEXT))
-        all_extracted = convert_neuralspace_format_to_rasa(matches)
-        extracted = self.filter_irrelevant_entities(all_extracted, self.component_config["dimensions"])
-        extracted = self.add_extractor_name(extracted)
-        message.set(
-            ENTITIES, message.get(ENTITIES, []) + extracted, add_to_output=True
-        )
-        return message
-
-    @classmethod
-    def load(
-            cls,
-            meta: Dict[Text, Any],
-            model_dir: Text,
-            model_metadata: Optional[Metadata] = None,
-            cached_component: Optional["NeuralSpaceEntityExtractor"] = None,
-            **kwargs: Any,
-    ) -> "NeuralSpaceEntityExtractor":
-        """Loads trained component (see parent class for full docstring)."""
-        language = model_metadata.get("language") if model_metadata else None
-        return cls(meta, language)
+            return messages
+        for message in messages:
+            matches = self._neuralspace_parse(message.get(TEXT))
+            all_extracted = convert_neuralspace_format_to_rasa(matches)
+            extracted = self.filter_irrelevant_entities(all_extracted, self.component_config["dimensions"])
+            extracted = self.add_extractor_name(extracted)
+            message.set(
+                ENTITIES, message.get(ENTITIES, []) + extracted, add_to_output=True
+            )
+        return messages

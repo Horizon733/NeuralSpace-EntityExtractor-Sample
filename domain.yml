@@ -1,4 +1,4 @@
-version: "2.0"
+version: "3.0"
 
 intents:
   - greet
@@ -18,6 +18,9 @@ slots:
   email:
     type: text
     influence_conversation: false
+    mappings:
+      - type: from_entity
+        entity: email
 
 responses:
   utter_greet:
@@ -38,6 +41,14 @@ responses:
 
   utter_iamabot:
   - text: "I am a bot, powered by Rasa."
+
+  utter_ask_email:
+  - text: "Please email"
+
+forms:
+  email_form:
+    required_slots:
+      - email
 
 session_config:
   session_expiration_time: 60
